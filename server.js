@@ -155,10 +155,23 @@ async function ensureDatabase() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
-  const [userRows] = await pool.query('SELECT id FROM users WHERE username = ? LIMIT 1', [ADMIN_USER]);
+  const [userRows] = await pool.query('SELECT id, password_hash FROM users WHERE username = ? LIMIT 1', [ADMIN_USER]);
   if (!userRows.length) {
     const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 10);
     await pool.query('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', [ADMIN_USER, passwordHash, 'admin']);
+  } else {
+    const current = userRows[0];
+    let matches = false;
+    try {
+      matches = await bcrypt.compare(ADMIN_PASSWORD, current.password_hash || '');
+    } catch {
+      matches = false;
+    }
+
+    if (!matches) {
+      const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 10);
+      await pool.query('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, current.id]);
+    }
   }
 
   const [configRows] = await pool.query('SELECT id FROM app_config WHERE id = 1 LIMIT 1');
@@ -211,8 +224,15 @@ app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
     const safeUsername = (username || ADMIN_USER).toString().trim();
 
-    const [rows] = await pool.query('SELECT id, username, password_hash, role FROM users WHERE username = ? LIMIT 1', [safeUsername]);
-    const user = rows[0];
+    let [rows] = await pool.query('SELECT id, username, password_hash, role FROM users WHERE username = ? LIMIT 1', [safeUsername]);
+    let user = rows[0];
+
+    if (!user && safeUsername === ADMIN_USER) {
+      const passwordHash = await bcrypt.hash(ADMIN_PASSWORD, 10);
+      await pool.query('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', [ADMIN_USER, passwordHash, 'admin']);
+      [rows] = await pool.query('SELECT id, username, password_hash, role FROM users WHERE username = ? LIMIT 1', [safeUsername]);
+      user = rows[0];
+    }
 
     if (!user) {
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
